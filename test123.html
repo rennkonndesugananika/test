@@ -1,0 +1,253 @@
+﻿<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tab Loop Controller</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            background-color: #0f172a;
+            color: #f8fafc;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        .status-pulse {
+            animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: .5; }
+        }
+    </style>
+</head>
+<body class="flex items-center justify-center min-h-screen p-4">
+
+
+    <div class="max-w-md w-full bg-slate-800 rounded-2xl shadow-2xl p-8 border border-slate-700">
+        <h1 class="text-2xl font-bold mb-6 text-center text-blue-400">Tab Loop Controller</h1>
+        
+        <div class="space-y-6">
+            <!-- Extension Status Checker -->
+            <div class="bg-slate-900/50 border border-slate-700 p-4 rounded-xl">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-xs font-bold text-slate-400 uppercase tracking-widest">InterClass Cloud Status</span>
+                    <button id="checkExtensionBtn" class="text-[10px] bg-slate-700 hover:bg-slate-600 px-2 py-1 rounded transition-colors">再確認</button>
+                </div>
+                <div class="flex items-center space-x-3">
+                    <div id="extStatusDot" class="w-2.5 h-2.5 rounded-full bg-slate-600"></div>
+                    <span id="extStatusText" class="text-sm text-slate-300">確認中...</span>
+                </div>
+                <p class="text-[10px] text-slate-500 mt-2">※InterClass Cloud 拡張機能の応答を確認します</p>
+            </div>
+
+
+            <!-- Status Indicator -->
+            <div id="statusContainer" class="flex items-center justify-center space-x-2 py-3 bg-slate-900 rounded-lg">
+                <div id="statusDot" class="w-3 h-3 rounded-full bg-red-500"></div>
+                <span id="statusText" class="text-sm font-medium uppercase tracking-wider text-slate-400">停止中</span>
+            </div>
+
+
+            <div class="bg-amber-900/30 border border-amber-700/50 p-4 rounded-lg text-amber-200 text-xs leading-relaxed">
+                <p class="font-bold mb-1 underline">注意：</p>
+                <p>ポップアップ許可が必要です。操作妨害を最小限にするため、ウィンドウは背後または極小サイズで処理されます。</p>
+            </div>
+
+
+            <!-- Interval Control -->
+            <div class="space-y-2">
+                <div class="flex justify-between text-sm">
+                    <label for="intervalRange" class="text-slate-300">実行間隔 (ミリ秒)</label>
+                    <span id="intervalValue" class="text-blue-400 font-mono">1000ms</span>
+                </div>
+                <input type="range" id="intervalRange" min="100" max="5000" step="100" value="1000" 
+                    class="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blue-500">
+            </div>
+
+
+            <!-- Stats -->
+            <div class="grid grid-cols-2 gap-4 text-center">
+                <div class="bg-slate-900 p-3 rounded-lg">
+                    <p class="text-xs text-slate-500 uppercase">実行回数</p>
+                    <p id="countDisplay" class="text-xl font-bold text-white">0</p>
+                </div>
+                <div class="bg-slate-900 p-3 rounded-lg">
+                    <p class="text-xs text-slate-500 uppercase">合計時間</p>
+                    <p id="timeDisplay" class="text-xl font-bold text-white">0s</p>
+                </div>
+            </div>
+
+
+            <!-- Actions -->
+            <div class="flex space-x-3">
+                <button id="startBtn" class="flex-1 bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 rounded-xl transition-all active:scale-95 shadow-lg shadow-blue-900/20">
+                    開始
+                </button>
+                <button id="stopBtn" class="flex-1 bg-slate-700 hover:bg-slate-600 text-white font-bold py-3 rounded-xl transition-all active:scale-95 disabled:opacity-50" disabled>
+                    停止
+                </button>
+            </div>
+        </div>
+    </div>
+
+
+    <script>
+        let worker = null;
+        let count = 0;
+        let startTime = null;
+
+
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const intervalRange = document.getElementById('intervalRange');
+        const intervalValue = document.getElementById('intervalValue');
+        const countDisplay = document.getElementById('countDisplay');
+        const timeDisplay = document.getElementById('timeDisplay');
+        const statusDot = document.getElementById('statusDot');
+        const statusText = document.getElementById('statusText');
+        
+        const extStatusDot = document.getElementById('extStatusDot');
+        const extStatusText = document.getElementById('extStatusText');
+        const checkExtensionBtn = document.getElementById('checkExtensionBtn');
+
+
+        const workerCode = `
+            let timerId = null;
+            self.onmessage = function(e) {
+                if (e.data.action === 'start') {
+                    if (timerId) clearInterval(timerId);
+                    timerId = setInterval(() => {
+                        self.postMessage('tick');
+                    }, e.data.interval);
+                } else if (e.data.action === 'stop') {
+                    if (timerId) clearInterval(timerId);
+                    timerId = null;
+                }
+            };
+        `;
+        const blob = new Blob([workerCode], { type: 'application/javascript' });
+        worker = new Worker(URL.createObjectURL(blob));
+
+
+        worker.onmessage = function() {
+            performTabCycle();
+            updateTimer();
+        };
+
+
+        async function checkExtensionStatus() {
+            extStatusText.textContent = '確認中...';
+            extStatusText.className = 'text-sm text-slate-300';
+            extStatusDot.className = 'w-2.5 h-2.5 rounded-full bg-slate-600';
+
+
+            const extensionId = 'bpijfbiplpkmjclneojmcanamjgfcnfc'; 
+            const testUrl = `chrome-extension://${extensionId}/icon128.png`;
+
+
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 2000);
+
+
+                const response = await fetch(testUrl, { signal: controller.signal });
+                clearTimeout(timeoutId);
+
+
+                if (response.ok) {
+                    extStatusDot.className = 'w-2.5 h-2.5 rounded-full bg-green-500';
+                    extStatusText.textContent = 'オンライン / 検出済み';
+                    extStatusText.className = 'text-sm text-green-400';
+                } else {
+                    throw new Error('Not found');
+                }
+            } catch (error) {
+                extStatusDot.className = 'w-2.5 h-2.5 rounded-full bg-red-500';
+                extStatusText.textContent = 'オフライン / 未検出';
+                extStatusText.className = 'text-sm text-red-400';
+            }
+        }
+
+
+        checkExtensionStatus();
+        checkExtensionBtn.addEventListener('click', checkExtensionStatus);
+
+
+        intervalRange.addEventListener('input', (e) => {
+            intervalValue.textContent = `${e.target.value}ms`;
+        });
+
+
+        function performTabCycle() {
+            // ウィンドウオプションを調整：
+            // - width/heightを最小に
+            // - top/leftを画面外に指定（ブラウザにより制限される場合がありますが有効な場合があります）
+            // - noopener, noreferrerでメインウィンドウとの親子関係を切り、干渉を減らす
+            const features = 'width=1,height=1,top=10000,left=10000,noopener=yes,noreferrer=yes,menubar=no,status=no,toolbar=no';
+            const newWindow = window.open('about:blank', '_blank', features);
+            
+            if (newWindow) {
+                count++;
+                countDisplay.textContent = count;
+                
+                // 実行中のタブがフォーカスを失わないよう、すぐに閉じる
+                // また、Pointer Lockを維持しやすくするためウィンドウの操作を最小限にする
+                setTimeout(() => {
+                    try {
+                        newWindow.close();
+                    } catch (e) {
+                        // ウィンドウが既に閉じている場合などのエラー回避
+                    }
+                }, 20); 
+            }
+        }
+
+
+        function updateTimer() {
+            if (!startTime) return;
+            const elapsed = Math.floor((Date.now() - startTime) / 1000);
+            timeDisplay.textContent = `${elapsed}s`;
+        }
+
+
+        startBtn.addEventListener('click', (e) => {
+            // クリックイベントが他に伝播してPointer Lockが外れるのを防ぐ
+            e.stopPropagation();
+            
+            const interval = parseInt(intervalRange.value);
+            
+            startBtn.disabled = true;
+            stopBtn.disabled = false;
+            statusDot.classList.replace('bg-red-500', 'bg-green-500');
+            statusDot.classList.add('status-pulse');
+            statusText.textContent = '実行中';
+            statusText.classList.replace('text-slate-400', 'text-green-400');
+
+
+            if (!startTime) startTime = Date.now();
+            
+            worker.postMessage({ action: 'start', interval: interval });
+            performTabCycle();
+        });
+
+
+        stopBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            worker.postMessage({ action: 'stop' });
+
+
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+            statusDot.classList.replace('bg-green-500', 'bg-red-500');
+            statusDot.classList.remove('status-pulse');
+            statusText.textContent = '停止中';
+            statusText.classList.replace('text-green-400', 'text-slate-400');
+        });
+
+
+        window.onbeforeunload = () => {
+            if (worker) worker.terminate();
+        };
+    </script>
+</body>
+</html>
